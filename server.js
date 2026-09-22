@@ -22,8 +22,6 @@ const jobs = new Map();
 function ytDlpExtractorArgs() {
   const args = [];
   if (POT_PROVIDER_URL) {
-    // Dipakai bareng service terpisah "bgutil-ytdlp-pot-provider" biar yt-dlp
-    // tidak kena blokir "Sign in to confirm you're not a bot" dari YouTube.
     args.push('--extractor-args', `youtubepot-bgutilhttp:base_url=${POT_PROVIDER_URL}`);
   }
   return args;
@@ -35,12 +33,18 @@ function runProcess(cmd, args) {
     let stdout = '';
     let stderr = '';
     proc.stdout.on('data', (d) => { stdout += d.toString(); });
-    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+    proc.stderr.on('data', (d) => {
+      const text = d.toString();
+      stderr += text;
+      text.split('\n').filter(Boolean).forEach(line => console.log('[yt-dlp]', line));
+    });
     proc.on('error', reject);
     proc.on('close', (code) => {
       if (code !== 0) {
         const lastLine = stderr.trim().split('\n').filter(Boolean).pop();
-        reject(new Error(lastLine || `${cmd} keluar dengan kode ${code}`));
+        const err = new Error(lastLine || `${cmd} keluar dengan kode ${code}`);
+        err.fullStderr = stderr;
+        reject(err);
       } else {
         resolve(stdout);
       }
@@ -52,11 +56,19 @@ async function probeVideo(url) {
   const args = [
     ...ytDlpExtractorArgs(),
     '--no-playlist',
+    '--verbose',
     '--skip-download',
     '--print', '%(title)s|||%(duration)s',
     url
   ];
-  const out = await runProcess('yt-dlp', args);
+  console.log('[probeVideo] yt-dlp', args.join(' '));
+  let out;
+  try {
+    out = await runProcess('yt-dlp', args);
+  } catch (e) {
+    console.error('[probeVideo] FAILED:', e.fullStderr || e.message);
+    throw e;
+  }
   const lastLine = out.trim().split('\n').filter(Boolean).pop() || '';
   const [title, duration] = lastLine.split('|||');
   return {
@@ -71,6 +83,7 @@ function downloadVideo(url, outPathNoExt, onProgress) {
       ...ytDlpExtractorArgs(),
       '--no-playlist',
       '--newline',
+      '--verbose',
       '-f', 'bv*[height<=720][ext=mp4]+ba[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]/best',
       '--merge-output-format', 'mp4',
       '-o', `${outPathNoExt}.%(ext)s`,
@@ -79,12 +92,17 @@ function downloadVideo(url, outPathNoExt, onProgress) {
     const proc = spawn('yt-dlp', args);
     let stderrBuf = '';
 
+    console.log('[downloadVideo] yt-dlp', args.join(' '));
     proc.stdout.on('data', (chunk) => {
       const text = chunk.toString();
       const m = text.match(/(\d{1,3}(?:\.\d)?)%/);
       if (m) onProgress(Math.min(99, parseFloat(m[1])));
     });
-    proc.stderr.on('data', (d) => { stderrBuf += d.toString(); });
+    proc.stderr.on('data', (d) => {
+      const text = d.toString();
+      stderrBuf += text;
+      text.split('\n').filter(Boolean).forEach(line => console.log('[yt-dlp download]', line));
+    });
     proc.on('error', reject);
     proc.on('close', (code) => {
       if (code !== 0) {
@@ -138,9 +156,13 @@ async function runJob(job, url) {
   const outPathNoExt = path.join(TMP_DIR, job.id);
   const thumbPath = path.join(TMP_DIR, `${job.id}.jpg`);
 
+  console.log(`[job ${job.id}] mulai. url=${url} POT_PROVIDER_URL=${POT_PROVIDER_URL || '(kosong)'}`);
+
   try {
     job.status = 'checking';
+    console.log(`[job ${job.id}] status=checking`);
     const info = await probeVideo(url);
+    console.log(`[job ${job.id}] probe sukses. title=${info.title} duration=${info.duration}`);
     job.title = info.title;
 
     if (info.duration && info.duration > MAX_DURATION_SEC) {
@@ -150,7 +172,9 @@ async function runJob(job, url) {
 
     job.status = 'downloading';
     job.progress = 0;
+    console.log(`[job ${job.id}] status=downloading`);
     await downloadVideo(url, outPathNoExt, (pct) => { job.progress = pct; });
+    console.log(`[job ${job.id}] download selesai`);
 
     const finalPath = findDownloadedFile(outPathNoExt);
     if (!finalPath || !fs.existsSync(finalPath)) {
@@ -171,9 +195,11 @@ async function runJob(job, url) {
 
     job.status = 'ready';
     job.progress = 100;
+    console.log(`[job ${job.id}] status=ready`);
   } catch (e) {
     job.status = 'error';
     job.error = e.message || String(e);
+    console.error(`[job ${job.id}] ERROR:`, job.error);
     if (job.filePath) {
       fs.unlink(job.filePath, () => {});
       job.filePath = null;
@@ -235,7 +261,6 @@ app.get('/api/youtube/file/:id', (req, res) => {
 
 app.get('/api/health', (req, res) => res.json({ ok: true, potProvider: !!POT_PROVIDER_URL }));
 
-// Bersihkan job & file lama secara berkala biar disk server tidak penuh
 setInterval(() => {
   const now = Date.now();
   for (const [id, job] of jobs) {
