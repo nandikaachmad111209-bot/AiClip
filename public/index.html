@@ -1446,7 +1446,7 @@ Hasilkan JSON persis sesuai struktur berikut:
       if (state.briefBase64) {
         parts.push({ inlineData: { mimeType: state.briefFile.type || 'application/pdf', data: state.briefBase64 } });
       }
-      parts.push(fileDataPayload.fileData);
+      parts.push(fileDataPayload);
       parts.push({ text: prompt });
 
       const requestBody = {
