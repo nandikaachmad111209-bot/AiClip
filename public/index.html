@@ -1234,16 +1234,8 @@
     // 1. Draw Blurred Background
     const blurVal = opts.blur;
     if (blurVal > 0) {
-      const scale = Math.max(0.03, 1 - (blurVal / 65));
-      const dw = Math.max(16, Math.floor(w * scale));
-      const dh = Math.max(9, Math.floor(h * scale));
-
-      bgOffCanvas.width = dw;
-      bgOffCanvas.height = dh;
-      const bgCtx = bgOffCanvas.getContext('2d');
-
       const vRatio = video.videoWidth / video.videoHeight;
-      const targetRatio = dw / dh;
+      const targetRatio = w / h;
       let sw, sh, sx, sy;
       if (vRatio > targetRatio) {
         sh = video.videoHeight;
@@ -1256,11 +1248,20 @@
         sx = 0;
         sy = (video.videoHeight - sh) / 2;
       }
-      bgCtx.drawImage(video, sx, sy, sw, sh, 0, 0, dw, dh);
 
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'medium';
-      ctx.drawImage(bgOffCanvas, 0, 0, dw, dh, 0, 0, w, h);
+      // Gaussian blur asli (bukan downscale/pixelated) pakai canvas filter,
+      // mirip efek blur background di Alight Motion / CapCut.
+      const blurPx = (blurVal / 60) * (w * 0.035);
+      const overscan = 1.15; // gambar digambar lebih besar dari canvas biar tepi yang "pudar" akibat blur ke-crop keluar
+      const ow = w * overscan;
+      const oh = h * overscan;
+      const ox = (w - ow) / 2;
+      const oy = (h - oh) / 2;
+
+      ctx.save();
+      ctx.filter = `blur(${blurPx}px)`;
+      ctx.drawImage(video, sx, sy, sw, sh, ox, oy, ow, oh);
+      ctx.restore();
     } else {
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, w, h);
