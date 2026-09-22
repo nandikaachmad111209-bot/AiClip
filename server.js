@@ -20,8 +20,19 @@ const POT_PROVIDER_URL = process.env.POT_PROVIDER_URL || '';
 const jobs = new Map();
 
 function ytDlpExtractorArgs() {
-  const args = [];
+  const args = [
+    // Skip langkah "download webpage" (sumber HTTP 429 dari YouTube) & pakai
+    // client android/web yang lebih jarang kena rate-limit.
+    '--extractor-args', 'youtube:player_client=android,web;player_skip=webpage,configs',
+    '--retries', '5',
+    '--extractor-retries', '5',
+    '--sleep-requests', '1',
+    '--sleep-interval', '3',
+    '--max-sleep-interval', '10'
+  ];
   if (POT_PROVIDER_URL) {
+    // Dipakai bareng service terpisah "bgutil-ytdlp-pot-provider" biar yt-dlp
+    // tidak kena blokir "Sign in to confirm you're not a bot" dari YouTube.
     args.push('--extractor-args', `youtubepot-bgutilhttp:base_url=${POT_PROVIDER_URL}`);
   }
   return args;
