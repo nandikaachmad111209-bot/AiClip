@@ -995,9 +995,12 @@
 
       select.disabled = false;
       state.apiKey = key;
+      state.availableModels = flashModels.map(m => m.name.replace('models/', ''));
       state.selectedModel = select.value;
-      select.addEventListener('change', e => state.selectedModel = e.target.value);
-
+      select.addEventListener('change', e => {
+        state.selectedModel = e.target.value;
+        state.availableModels = [e.target.value, ...state.availableModels.filter(m => m !== e.target.value)];
+      });
       showKeyStatus('✅ API Key Valid! Model siap digunakan.', true);
       validateStep1();
     } catch (err) {
@@ -1454,7 +1457,12 @@ Hasilkan JSON persis sesuai struktur berikut:
         generationConfig: { responseMimeType: "application/json" }
       };
 
-      const aiResponse = await fetchGeminiWithRetry(state.selectedModel, state.apiKey, requestBody);
+      const aiResponse = await fetchGeminiWithModelFallback(
+        state.availableModels && state.availableModels.length ? state.availableModels : [state.selectedModel],
+        state.apiKey,
+        requestBody,
+        (modelName, attemptNote) => updateProgress(45, `Mencoba model ${modelName}... ${attemptNote}`)
+      );
       state.aiResults = parseAndValidateAiJson(aiResponse, state.videoDuration);
 
       updateProgress(65, `AI Selesai! Mengidentifikasi ${state.aiResults.clips.length} clip. Memulai rendering...`);
@@ -1507,22 +1515,43 @@ Hasilkan JSON persis sesuai struktur berikut:
         body: JSON.stringify(body)
       });
       if (!res.ok) {
+        const errText = await res.text();
         if ((res.status === 429 || res.status === 503) && retries > 0) {
           await new Promise(r => setTimeout(r, 3000));
           return fetchGeminiWithRetry(model, key, body, retries - 1);
         }
-        const errText = await res.text();
-        throw new Error(`Gemini API error (${res.status}): ${errText}`);
+        const err = new Error(`Gemini API error (${res.status}): ${errText}`);
+        err.status = res.status;
+        throw err;
       }
       const data = await res.json();
       return data.candidates[0].content.parts[0].text;
     } catch(e) {
-      if (retries > 0) {
+      if (!e.status && retries > 0) {
         await new Promise(r => setTimeout(r, 3000));
         return fetchGeminiWithRetry(model, key, body, retries - 1);
       }
       throw e;
     }
+  }
+
+  async function fetchGeminiWithModelFallback(models, key, body, onAttempt) {
+    let lastError = null;
+    for (let i = 0; i < models.length; i++) {
+      const model = models[i];
+      try {
+        if (onAttempt) onAttempt(model, `(${i + 1}/${models.length})`);
+        return await fetchGeminiWithRetry(model, key, body, 1);
+      } catch (e) {
+        lastError = e;
+        const isQuotaOrOverload = e.status === 429 || e.status === 503;
+        const isLastModel = i === models.length - 1;
+        if (!isQuotaOrOverload || isLastModel) {
+          if (!isQuotaOrOverload) throw e;
+        }
+      }
+    }
+    throw lastError || new Error('Semua model Gemini gagal dicoba.');
   }
 
   async function uploadVideoToGeminiFilesApi(fileBlob, apiKey, progressCallback) {
