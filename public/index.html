@@ -1722,6 +1722,7 @@ Hasilkan JSON persis sesuai struktur berikut:
         audioEncoder.configure({ codec: 'mp4a.40.2', sampleRate: audioBuf.sampleRate, numberOfChannels: audioBuf.numberOfChannels, bitrate: 128000 });
 
         let frameIndex = 0;
+        let effectiveStartSec = null; // waktu ASLI frame pertama yang berhasil ditangkap
         let lastMediaTime = clip.start_sec;
         let rvfcHandle = null;
         let finished = false;
@@ -1731,7 +1732,7 @@ Hasilkan JSON persis sesuai struktur berikut:
           finished = true;
           try {
             renderVideo.pause();
-            encodeAudioSegment(audioEncoder, audioBuf, clip.start_sec, lastMediaTime);
+            encodeAudioSegment(audioEncoder, audioBuf, effectiveStartSec != null ? effectiveStartSec : clip.start_sec, lastMediaTime);
             await audioEncoder.flush();
             await videoEncoder.flush();
             muxer.finalize();
@@ -1743,6 +1744,7 @@ Hasilkan JSON persis sesuai struktur berikut:
           }
         }
 
+        let firstFrameSeen = false;
         function onFrame(now, metadata) {
           if (finished) return;
           if (state.cancelRequested) {
@@ -1753,13 +1755,27 @@ Hasilkan JSON persis sesuai struktur berikut:
           }
 
           const mediaTime = metadata.mediaTime;
+
+          // Skip frame yang mediaTime-nya masih SEBELUM start_sec (bisa terjadi
+          // karena video sempat nyeek ke keyframe sebelum titik yang diminta).
+          // Kalau ini dipaksa dienkode, timestamp-nya jadi negatif dan bikin
+          // metadata durasi MP4 rusak (kebaca cuma "2 detik" di galeri HP).
+          if (!firstFrameSeen && mediaTime < clip.start_sec - 0.001) {
+            rvfcHandle = renderVideo.requestVideoFrameCallback(onFrame);
+            return;
+          }
+          if (!firstFrameSeen) {
+            firstFrameSeen = true;
+            effectiveStartSec = mediaTime; // patokan "detik ke-0" clip ini, apapun waktu asli frame pertama
+          }
+
           if (mediaTime >= clip.end_sec || renderVideo.ended) {
             finishAndResolve();
             return;
           }
           lastMediaTime = mediaTime;
 
-          const relTime = (mediaTime - clip.start_sec) + state.editor.subOffset;
+          const relTime = (mediaTime - effectiveStartSec) + state.editor.subOffset;
           let currentSub = '';
           if (clip.subtitles && Array.isArray(clip.subtitles)) {
             const match = clip.subtitles.find(s => relTime >= s.start && relTime <= s.end);
@@ -1768,13 +1784,13 @@ Hasilkan JSON persis sesuai struktur berikut:
 
           drawVideoFrame(rCtx, renderVideo, targetW, targetH, state.editor, currentSub);
 
-          const timestampUs = Math.round((mediaTime - clip.start_sec) * 1e6);
+          const timestampUs = Math.max(0, Math.round((mediaTime - effectiveStartSec) * 1e6));
           const vFrame = new VideoFrame(renderCanvas, { timestamp: timestampUs });
           videoEncoder.encode(vFrame, { keyFrame: frameIndex % 150 === 0 });
           vFrame.close();
           frameIndex++;
 
-          const pct = Math.min(100, ((mediaTime - clip.start_sec) / (clip.end_sec - clip.start_sec)) * 100);
+          const pct = Math.min(100, ((mediaTime - effectiveStartSec) / (clip.end_sec - clip.start_sec)) * 100);
           if (onProgress) onProgress(pct);
 
           rvfcHandle = renderVideo.requestVideoFrameCallback(onFrame);
