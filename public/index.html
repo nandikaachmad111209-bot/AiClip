@@ -1252,18 +1252,28 @@
         sy = (video.videoHeight - sh) / 2;
       }
 
-      // Gaussian blur asli (bukan downscale/pixelated) pakai canvas filter,
-      // mirip efek blur background di Alight Motion / CapCut.
-      const blurPx = (blurVal / 60) * (w * 0.035);
-      const overscan = 1.15; // gambar digambar lebih besar dari canvas biar tepi yang "pudar" akibat blur ke-crop keluar
-      const ow = w * overscan;
-      const oh = h * overscan;
-      const ox = (w - ow) / 2;
-      const oy = (h - oh) / 2;
+      const DS = 0.35;
+      const bw = Math.max(2, Math.round(w * DS));
+      const bh = Math.max(2, Math.round(h * DS));
+      bgOffCanvas.width = bw;
+      bgOffCanvas.height = bh;
+      const bgCtx = bgOffCanvas.getContext('2d');
+
+      const overscan = 1.15;
+      const ow = bw * overscan;
+      const oh = bh * overscan;
+      const ox = (bw - ow) / 2;
+      const oy = (bh - oh) / 2;
+      const blurPx = (blurVal / 60) * (bw * 0.035);
+
+      bgCtx.filter = `blur(${blurPx}px)`;
+      bgCtx.drawImage(video, sx, sy, sw, sh, ox, oy, ow, oh);
+      bgCtx.filter = 'none';
 
       ctx.save();
-      ctx.filter = `blur(${blurPx}px)`;
-      ctx.drawImage(video, sx, sy, sw, sh, ox, oy, ow, oh);
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(bgOffCanvas, 0, 0, bw, bh, 0, 0, w, h);
       ctx.restore();
     } else {
       ctx.fillStyle = '#000';
@@ -1677,8 +1687,10 @@ Hasilkan JSON persis sesuai struktur berikut:
         recorder.start();
 
         const duration = clip.end_sec - clip.start_sec;
+        const frameInterval = 1000 / 30;
+        let lastDrawTime = 0;
 
-        function drawFrame() {
+        function drawFrame(now) {
           if (state.cancelRequested) {
             renderVideo.pause();
             recorder.stop();
@@ -1692,6 +1704,12 @@ Hasilkan JSON persis sesuai struktur berikut:
             recorder.stop();
             return;
           }
+
+          if (now - lastDrawTime < frameInterval) {
+            requestAnimationFrame(drawFrame);
+            return;
+          }
+          lastDrawTime = now;
 
           const relTime = (currTime - clip.start_sec) + state.editor.subOffset;
           let currentSub = '';
@@ -1708,7 +1726,7 @@ Hasilkan JSON persis sesuai struktur berikut:
           requestAnimationFrame(drawFrame);
         }
 
-        drawFrame();
+        requestAnimationFrame(drawFrame);
       };
     });
   }
