@@ -1687,6 +1687,7 @@ Hasilkan JSON persis sesuai struktur berikut:
         const targetW = state.editor.resolution === 1080 ? 1080 : 720;
         const targetH = state.editor.resolution === 1080 ? 1920 : 1280;
         const fps = 30;
+        const frameDurationSec = 1 / fps;
 
         const renderCanvas = document.createElement('canvas');
         renderCanvas.width = targetW;
@@ -1721,61 +1722,31 @@ Hasilkan JSON persis sesuai struktur berikut:
         });
         audioEncoder.configure({ codec: 'mp4a.40.2', sampleRate: audioBuf.sampleRate, numberOfChannels: audioBuf.numberOfChannels, bitrate: 128000 });
 
-        let frameIndex = 0;
-        let effectiveStartSec = null; // waktu ASLI frame pertama yang berhasil ditangkap
-        let lastMediaTime = clip.start_sec;
-        let rvfcHandle = null;
-        let finished = false;
-
-        async function finishAndResolve() {
-          if (finished) return;
-          finished = true;
-          try {
-            renderVideo.pause();
-            encodeAudioSegment(audioEncoder, audioBuf, effectiveStartSec != null ? effectiveStartSec : clip.start_sec, lastMediaTime);
-            await audioEncoder.flush();
-            await videoEncoder.flush();
-            muxer.finalize();
-            const { buffer } = muxer.target;
-            const blob = new Blob([buffer], { type: 'video/mp4' });
-            resolve(URL.createObjectURL(blob));
-          } catch (e) {
-            reject(e);
-          }
+        function seekTo(t) {
+          return new Promise((res) => {
+            const safeT = Math.max(0, Math.min(t, renderVideo.duration - 0.02));
+            const onSeeked = () => {
+              renderVideo.removeEventListener('seeked', onSeeked);
+              res();
+            };
+            renderVideo.addEventListener('seeked', onSeeked);
+            renderVideo.currentTime = safeT;
+          });
         }
 
-        let firstFrameSeen = false;
-        function onFrame(now, metadata) {
-          if (finished) return;
+        const clipDuration = clip.end_sec - clip.start_sec;
+        const totalFrames = Math.max(1, Math.round(clipDuration * fps));
+
+        for (let i = 0; i < totalFrames; i++) {
           if (state.cancelRequested) {
-            finished = true;
-            renderVideo.pause();
             reject(new Error('Batal'));
             return;
           }
 
-          const mediaTime = metadata.mediaTime;
+          const tAbs = clip.start_sec + i * frameDurationSec;
+          await seekTo(tAbs);
 
-          // Skip frame yang mediaTime-nya masih SEBELUM start_sec (bisa terjadi
-          // karena video sempat nyeek ke keyframe sebelum titik yang diminta).
-          // Kalau ini dipaksa dienkode, timestamp-nya jadi negatif dan bikin
-          // metadata durasi MP4 rusak (kebaca cuma "2 detik" di galeri HP).
-          if (!firstFrameSeen && mediaTime < clip.start_sec - 0.001) {
-            rvfcHandle = renderVideo.requestVideoFrameCallback(onFrame);
-            return;
-          }
-          if (!firstFrameSeen) {
-            firstFrameSeen = true;
-            effectiveStartSec = mediaTime; // patokan "detik ke-0" clip ini, apapun waktu asli frame pertama
-          }
-
-          if (mediaTime >= clip.end_sec || renderVideo.ended) {
-            finishAndResolve();
-            return;
-          }
-          lastMediaTime = mediaTime;
-
-          const relTime = (mediaTime - effectiveStartSec) + state.editor.subOffset;
+          const relTime = (i * frameDurationSec) + state.editor.subOffset;
           let currentSub = '';
           if (clip.subtitles && Array.isArray(clip.subtitles)) {
             const match = clip.subtitles.find(s => relTime >= s.start && relTime <= s.end);
@@ -1784,24 +1755,34 @@ Hasilkan JSON persis sesuai struktur berikut:
 
           drawVideoFrame(rCtx, renderVideo, targetW, targetH, state.editor, currentSub);
 
-          const timestampUs = Math.max(0, Math.round((mediaTime - effectiveStartSec) * 1e6));
-          const vFrame = new VideoFrame(renderCanvas, { timestamp: timestampUs });
-          videoEncoder.encode(vFrame, { keyFrame: frameIndex % 150 === 0 });
+          // Backpressure: jangan biarkan antrean encoder membengkak tak terkendali
+          while (videoEncoder.encodeQueueSize > 12) {
+            await new Promise(r => setTimeout(r, 10));
+          }
+
+          const timestampUs = Math.round(i * frameDurationSec * 1e6);
+          const vFrame = new VideoFrame(renderCanvas, {
+            timestamp: timestampUs,
+            duration: Math.round(frameDurationSec * 1e6)
+          });
+          videoEncoder.encode(vFrame, { keyFrame: i % 150 === 0 });
           vFrame.close();
-          frameIndex++;
 
-          const pct = Math.min(100, ((mediaTime - effectiveStartSec) / (clip.end_sec - clip.start_sec)) * 100);
+          const pct = Math.min(100, (i / totalFrames) * 100);
           if (onProgress) onProgress(pct);
-
-          rvfcHandle = renderVideo.requestVideoFrameCallback(onFrame);
         }
 
-        renderVideo.currentTime = clip.start_sec;
-        renderVideo.onseeked = () => {
-          renderVideo.onseeked = null;
-          renderVideo.play().catch(reject);
-          rvfcHandle = renderVideo.requestVideoFrameCallback(onFrame);
-        };
+        renderVideo.pause();
+        // Audio dipotong PERSIS mengikuti rentang [start_sec, end_sec] yang diminta —
+        // sama seperti jumlah frame video di atas, jadi durasi dua track selalu pas.
+        encodeAudioSegment(audioEncoder, audioBuf, clip.start_sec, clip.end_sec);
+        await audioEncoder.flush();
+        await videoEncoder.flush();
+        muxer.finalize();
+
+        const { buffer } = muxer.target;
+        const blob = new Blob([buffer], { type: 'video/mp4' });
+        resolve(URL.createObjectURL(blob));
       } catch (e) {
         reject(e);
       }
