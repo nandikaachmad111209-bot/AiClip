@@ -7,7 +7,11 @@ const crypto = require('crypto');
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+  etag: false,
+  lastModified: false,
+  setHeaders: (res) => res.setHeader('Cache-Control', 'no-store')
+}));
 
 const TMP_DIR = path.join(os.tmpdir(), 'achclip-jobs');
 fs.mkdirSync(TMP_DIR, { recursive: true });
