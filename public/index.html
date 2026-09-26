@@ -637,7 +637,12 @@
     <!-- Auto Subtitle Template -->
     <div class="card" style="background: var(--bg-input);">
       <div class="card-title" style="font-size: 14px; border:none; padding:0;">Gaya Subtitle "Klasik Vintage"</div>
-      
+
+      <label class="checkbox-group">
+        <input type="checkbox" id="subtitleEnabledToggle" checked /> Tampilkan Auto Subtitle
+      </label>
+
+      <div id="subtitleStyleOptions">
       <div class="form-group">
         <label>Jenis Font</label>
         <select id="fontSelect">
@@ -677,6 +682,7 @@
       <div class="slider-group">
         <div class="slider-header"><span>Geser Sinkron Subtitle (Koreksi Waktu)</span><span id="valSubOffset">0.0s</span></div>
         <input type="range" id="sliderSubOffset" min="-2.0" max="2.0" step="0.1" value="0.0" />
+      </div>
       </div>
     </div>
 
@@ -793,6 +799,7 @@
       subSize: 28,
       subY: 0,
       subOffset: 0,
+      subtitleEnabled: true,
       resolution: 720,
       durationChoice: 'auto'
     },
@@ -896,6 +903,11 @@
     bindSlider('sliderSubSize', 'valSubSize', 'px', v => state.editor.subSize = parseInt(v));
     bindSlider('sliderSubY', 'valSubY', '', v => state.editor.subY = parseInt(v));
     bindSlider('sliderSubOffset', 'valSubOffset', 's', v => state.editor.subOffset = parseFloat(v));
+
+    el('subtitleEnabledToggle').addEventListener('change', e => {
+      state.editor.subtitleEnabled = e.target.checked;
+      el('subtitleStyleOptions').style.display = e.target.checked ? '' : 'none';
+    });
 
     el('btnResetFg').addEventListener('click', () => {
       el('sliderZoom').value = 100;
@@ -1300,7 +1312,7 @@
     ctx.drawImage(video, dx, dy, targetW, targetH);
 
     // 3. Draw Subtitle
-    if (subtitleText) {
+    if (subtitleText && opts.subtitleEnabled !== false) {
       drawSubtitleOnCtx(ctx, subtitleText, w, h, opts);
     }
   }
