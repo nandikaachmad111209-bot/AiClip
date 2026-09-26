@@ -1687,7 +1687,6 @@ Hasilkan JSON persis sesuai struktur berikut:
         const targetW = state.editor.resolution === 1080 ? 1080 : 720;
         const targetH = state.editor.resolution === 1080 ? 1920 : 1280;
         const fps = 30;
-        const frameDurationSec = 1 / fps;
 
         const renderCanvas = document.createElement('canvas');
         renderCanvas.width = targetW;
@@ -1722,31 +1721,68 @@ Hasilkan JSON persis sesuai struktur berikut:
         });
         audioEncoder.configure({ codec: 'mp4a.40.2', sampleRate: audioBuf.sampleRate, numberOfChannels: audioBuf.numberOfChannels, bitrate: 128000 });
 
-        function seekTo(t) {
-          return new Promise((res) => {
-            const safeT = Math.max(0, Math.min(t, renderVideo.duration - 0.02));
-            const onSeeked = () => {
-              renderVideo.removeEventListener('seeked', onSeeked);
-              res();
-            };
-            renderVideo.addEventListener('seeked', onSeeked);
-            renderVideo.currentTime = safeT;
-          });
+        // Video diputar normal (bukan di-seek satu-satu, jauh lebih cepat),
+        // tapi kecepatan putarnya diperlambat supaya HP yang lemah tetap punya
+        // cukup waktu buat gambar+encode tiap frame tanpa keteteran/kehilangan
+        // frame. Timestamp tiap frame tetap diambil dari waktu ASLI video
+        // (metadata.mediaTime), bukan asumsi, jadi hasil akhirnya tetap main
+        // di kecepatan normal & tetap presisi sinkron.
+        const PLAYBACK_RATE = 0.5;
+        renderVideo.playbackRate = PLAYBACK_RATE;
+
+        let frameIndex = 0;
+        let effectiveStartSec = null; // waktu ASLI frame pertama yang berhasil ditangkap
+        let lastMediaTime = clip.start_sec;
+        let rvfcHandle = null;
+        let finished = false;
+
+        async function finishAndResolve() {
+          if (finished) return;
+          finished = true;
+          try {
+            renderVideo.pause();
+            encodeAudioSegment(audioEncoder, audioBuf, effectiveStartSec != null ? effectiveStartSec : clip.start_sec, lastMediaTime);
+            await audioEncoder.flush();
+            await videoEncoder.flush();
+            muxer.finalize();
+            const { buffer } = muxer.target;
+            const blob = new Blob([buffer], { type: 'video/mp4' });
+            resolve(URL.createObjectURL(blob));
+          } catch (e) {
+            reject(e);
+          }
         }
 
-        const clipDuration = clip.end_sec - clip.start_sec;
-        const totalFrames = Math.max(1, Math.round(clipDuration * fps));
-
-        for (let i = 0; i < totalFrames; i++) {
+        let firstFrameSeen = false;
+        async function onFrame(now, metadata) {
+          if (finished) return;
           if (state.cancelRequested) {
+            finished = true;
+            renderVideo.pause();
             reject(new Error('Batal'));
             return;
           }
 
-          const tAbs = clip.start_sec + i * frameDurationSec;
-          await seekTo(tAbs);
+          const mediaTime = metadata.mediaTime;
 
-          const relTime = (i * frameDurationSec) + state.editor.subOffset;
+          // Skip frame yang mediaTime-nya masih SEBELUM start_sec (bisa terjadi
+          // karena video sempat nyeek/decode ke titik sebelum yang diminta).
+          if (!firstFrameSeen && mediaTime < clip.start_sec - 0.001) {
+            rvfcHandle = renderVideo.requestVideoFrameCallback(onFrame);
+            return;
+          }
+          if (!firstFrameSeen) {
+            firstFrameSeen = true;
+            effectiveStartSec = mediaTime;
+          }
+
+          if (mediaTime >= clip.end_sec || renderVideo.ended) {
+            finishAndResolve();
+            return;
+          }
+          lastMediaTime = mediaTime;
+
+          const relTime = (mediaTime - effectiveStartSec) + state.editor.subOffset;
           let currentSub = '';
           if (clip.subtitles && Array.isArray(clip.subtitles)) {
             const match = clip.subtitles.find(s => relTime >= s.start && relTime <= s.end);
@@ -1755,34 +1791,30 @@ Hasilkan JSON persis sesuai struktur berikut:
 
           drawVideoFrame(rCtx, renderVideo, targetW, targetH, state.editor, currentSub);
 
-          // Backpressure: jangan biarkan antrean encoder membengkak tak terkendali
+          // Backpressure: kalau antrean encoder menumpuk, kasih jeda kecil dulu
+          // sebelum minta frame berikutnya, biar encoder sempat mengejar.
           while (videoEncoder.encodeQueueSize > 12) {
             await new Promise(r => setTimeout(r, 10));
           }
 
-          const timestampUs = Math.round(i * frameDurationSec * 1e6);
-          const vFrame = new VideoFrame(renderCanvas, {
-            timestamp: timestampUs,
-            duration: Math.round(frameDurationSec * 1e6)
-          });
-          videoEncoder.encode(vFrame, { keyFrame: i % 150 === 0 });
+          const timestampUs = Math.max(0, Math.round((mediaTime - effectiveStartSec) * 1e6));
+          const vFrame = new VideoFrame(renderCanvas, { timestamp: timestampUs });
+          videoEncoder.encode(vFrame, { keyFrame: frameIndex % 150 === 0 });
           vFrame.close();
+          frameIndex++;
 
-          const pct = Math.min(100, (i / totalFrames) * 100);
+          const pct = Math.min(100, ((mediaTime - effectiveStartSec) / (clip.end_sec - clip.start_sec)) * 100);
           if (onProgress) onProgress(pct);
+
+          rvfcHandle = renderVideo.requestVideoFrameCallback(onFrame);
         }
 
-        renderVideo.pause();
-        // Audio dipotong PERSIS mengikuti rentang [start_sec, end_sec] yang diminta —
-        // sama seperti jumlah frame video di atas, jadi durasi dua track selalu pas.
-        encodeAudioSegment(audioEncoder, audioBuf, clip.start_sec, clip.end_sec);
-        await audioEncoder.flush();
-        await videoEncoder.flush();
-        muxer.finalize();
-
-        const { buffer } = muxer.target;
-        const blob = new Blob([buffer], { type: 'video/mp4' });
-        resolve(URL.createObjectURL(blob));
+        renderVideo.currentTime = clip.start_sec;
+        renderVideo.onseeked = () => {
+          renderVideo.onseeked = null;
+          renderVideo.play().catch(reject);
+          rvfcHandle = renderVideo.requestVideoFrameCallback(onFrame);
+        };
       } catch (e) {
         reject(e);
       }
