@@ -1279,15 +1279,15 @@
     warnBox.classList.add('hidden');
     warnBox.innerHTML = '';
 
-    if (state.videoDuration > 1500) {
-      warnBox.innerHTML = '<strong>⚠️ Peringatan:</strong> Durasi video melebihi 25 menit. Mohon gunakan video yang lebih pendek (maks 25 menit) untuk performa browser yang stabil.';
+    if (state.videoDuration > 1800) {
+      warnBox.innerHTML = '<strong>⚠️ Peringatan:</strong> Durasi video melebihi 30 menit. Mohon gunakan video yang lebih pendek (maks 30 menit) untuk performa browser yang stabil.';
       warnBox.classList.remove('hidden');
     }
   }
 
   function validateStep1() {
     const hasVideo = state.videoSrcUrl !== null && state.videoDuration > 0;
-    const isDurationValid = state.videoDuration <= 1500;
+    const isDurationValid = state.videoDuration <= 1800;
     const isValid = state.apiKey && state.briefFile && hasVideo && isDurationValid;
     el('btnGoToStep2').disabled = !isValid;
   }
