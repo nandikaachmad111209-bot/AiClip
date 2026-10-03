@@ -16,7 +16,7 @@ app.use(express.static(path.join(__dirname, 'public'), {
 const TMP_DIR = path.join(os.tmpdir(), 'achclip-jobs');
 fs.mkdirSync(TMP_DIR, { recursive: true });
 
-const MAX_DURATION_SEC = 1500; // 25 menit, sesuai batas aplikasi
+const MAX_DURATION_SEC = 1800; // 30 menit, sesuai batas aplikasi
 const JOB_MAX_AGE_MS = 45 * 60 * 1000; // 45 menit lalu file dihapus otomatis
 const POT_PROVIDER_URL = process.env.POT_PROVIDER_URL || '';
 
@@ -182,7 +182,7 @@ async function runJob(job, url) {
     job.title = info.title;
 
     if (info.duration && info.duration > MAX_DURATION_SEC) {
-      throw new Error(`Video berdurasi ${Math.round(info.duration / 60)} menit, melebihi batas 25 menit.`);
+      throw new Error(`Video berdurasi ${Math.round(info.duration / 60)} menit, melebihi batas 30 menit.`);
     }
     job.duration = info.duration;
 
