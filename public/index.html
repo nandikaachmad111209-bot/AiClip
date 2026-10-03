@@ -495,10 +495,92 @@
     .text-success { color: var(--accent-green); }
     .text-danger { color: var(--accent-red); }
     a { color: var(--accent-blue); }
+
+    /* --- Riwayat Proyek (History Drawer) --- */
+    #historyMenuBtn {
+      position: fixed;
+      top: 14px;
+      left: 14px;
+      z-index: 500;
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      font-size: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+    #historyOverlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.55);
+      z-index: 600;
+    }
+    #historyDrawer {
+      position: fixed;
+      top: 0; left: 0; bottom: 0;
+      width: 85%;
+      max-width: 360px;
+      background: var(--bg-card);
+      z-index: 601;
+      overflow-y: auto;
+      padding: 16px;
+      box-shadow: 4px 0 20px rgba(0,0,0,0.4);
+    }
+    .history-drawer-title {
+      font-size: 17px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .history-project {
+      background: var(--bg-input);
+      border-radius: var(--radius);
+      padding: 10px;
+      margin-bottom: 10px;
+    }
+    .history-project-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 8px;
+      cursor: pointer;
+    }
+    .history-project-title { font-size: 14px; font-weight: 600; }
+    .history-project-meta { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+    .history-project-clips { margin-top: 10px; display: none; }
+    .history-project-clips.open { display: block; }
+    .history-clip-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 0;
+      border-top: 1px solid var(--border-color);
+    }
+    .history-clip-row video { width: 56px; height: 100px; object-fit: cover; border-radius: 6px; background:#000; }
+    .history-clip-info { flex: 1; min-width: 0; }
+    .history-clip-info div:first-child { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .history-empty { color: var(--text-muted); font-size: 13px; text-align: center; padding: 30px 0; }
   </style>
 </head>
 <body>
 <script src="https://cdn.jsdelivr.net/npm/mp4-muxer@5/build/mp4-muxer.min.js"></script>
+
+<button id="historyMenuBtn" title="Riwayat Proyek">☰</button>
+<div id="historyOverlay" class="hidden"></div>
+<div id="historyDrawer" class="hidden">
+  <div class="history-drawer-title">
+    <span>📁 Riwayat Proyek</span>
+    <button class="btn btn-secondary btn-sm" id="historyCloseBtn">✕</button>
+  </div>
+  <div id="historyList"></div>
+</div>
 
 <div class="app-container">
   
@@ -804,6 +886,7 @@
       durationChoice: 'auto'
     },
     aiResults: null,
+    historyEditMode: false,
     renderedClips: [],
     isProcessing: false,
     cancelRequested: false,
@@ -890,7 +973,13 @@
       switchStep(1);
     });
     el('btnBackToStep2').addEventListener('click', () => switchStep(2));
-    el('btnStartProcess').addEventListener('click', startAiAndRenderProcess);
+    el('btnStartProcess').addEventListener('click', () => {
+      if (state.historyEditMode) {
+        startRenderOnlyProcess();
+      } else {
+        startAiAndRenderProcess();
+      }
+    });
     el('btnRestartAll').addEventListener('click', () => location.reload());
     el('btnCancelProcess').addEventListener('click', () => { state.cancelRequested = true; });
 
@@ -974,6 +1063,8 @@
     state.videoDuration = 0;
     state.ytId = '';
     state.ytUrl = '';
+    state.historyEditMode = false;
+    el('btnStartProcess').textContent = '🚀 Proses Clip Sekarang';
     if (state.ytPollTimer) { clearTimeout(state.ytPollTimer); state.ytPollTimer = null; }
     el('thumbContainer').classList.add('hidden');
     el('durationWarning').classList.add('hidden');
@@ -1498,48 +1589,7 @@ Hasilkan JSON persis sesuai struktur berikut:
 
       updateProgress(65, `AI Selesai! Mengidentifikasi ${state.aiResults.clips.length} clip. Memulai rendering...`);
 
-      // Decode audio sumber SEKALI di awal (dipakai ulang oleh tiap clip) supaya
-      // proses render frame-accurate & audio selalu presisi sama panjang videonya.
-      state.decodedAudioBuffer = null;
-      if (window.VideoEncoder && window.AudioEncoder && window.Mp4Muxer) {
-        try {
-          const decodeCtx = new (window.AudioContext || window.webkitAudioContext)();
-          const arrBuf = await state.videoBlob.arrayBuffer();
-          state.decodedAudioBuffer = await decodeCtx.decodeAudioData(arrBuf);
-          decodeCtx.close();
-        } catch (e) {
-          console.warn('Gagal decode audio untuk render presisi, fallback ke metode lama:', e);
-          state.decodedAudioBuffer = null;
-        }
-      }
-
-      state.renderedClips = [];
-      const totalClips = state.aiResults.clips.length;
-
-      for (let i = 0; i < totalClips; i++) {
-        if (state.cancelRequested) throw new Error('Proses dibatalkan oleh pengguna.');
-        const clip = state.aiResults.clips[i];
-        const clipProgressStart = 65 + (i / totalClips) * 30;
-        
-        updateProgress(clipProgressStart, `Merekam Clip #${i+1} dari ${totalClips}: "${clip.headline}"...`);
-
-        try {
-          const blobUrl = await renderSingleClip(clip, p => {
-            updateProgress(clipProgressStart + (p * 0.30 / totalClips), `Merekam Clip #${i+1}: ${Math.round(p)}%`);
-          });
-          state.renderedClips.push({ ...clip, blobUrl, success: true });
-        } catch (err) {
-          console.error(`Render clip #${i+1} gagal:`, err);
-          state.renderedClips.push({ ...clip, blobUrl: null, success: false, errorMsg: err.message });
-        }
-      }
-
-      updateProgress(100, 'Selesai! Menyiapkan hasil...');
-      setTimeout(() => {
-        hideModal();
-        renderResultsPage();
-        switchStep(3);
-      }, 500);
+      await renderAllClipsAndShowResults(65);
 
     } catch (err) {
       alert(`Error Proses AI/Render: ${err.message}`);
@@ -1550,6 +1600,83 @@ Hasilkan JSON persis sesuai struktur berikut:
         try { state.wakeLock.release(); } catch(e){}
       }
     }
+  }
+
+  // Render ulang SEMUA clip pakai state.aiResults.clips yang sudah ada
+  // (tanpa panggil Gemini lagi) — dipakai saat "Edit & Render Ulang" dari
+  // Riwayat Proyek, biar user bisa ganti gaya/blur/subtitle tanpa boros kuota AI.
+  async function startRenderOnlyProcess() {
+    if (!state.aiResults || !state.aiResults.clips || !state.aiResults.clips.length) {
+      alert('Tidak ada data clip untuk dirender. Buka proyek dari Riwayat dulu.');
+      return;
+    }
+    state.cancelRequested = false;
+    state.isProcessing = true;
+    showModal('Merender Ulang Clip...', 'Menyiapkan render dengan gaya baru...');
+
+    try {
+      if ('wakeLock' in navigator) state.wakeLock = await navigator.wakeLock.request('screen');
+    } catch(e){}
+
+    try {
+      await renderAllClipsAndShowResults(5);
+    } catch (err) {
+      alert(`Error Render: ${err.message}`);
+      hideModal();
+    } finally {
+      state.isProcessing = false;
+      if (state.wakeLock) {
+        try { state.wakeLock.release(); } catch(e){}
+      }
+    }
+  }
+
+  async function renderAllClipsAndShowResults(progressStart) {
+    // Decode audio sumber SEKALI di awal (dipakai ulang oleh tiap clip) supaya
+    // proses render frame-accurate & audio selalu presisi sama panjang videonya.
+    state.decodedAudioBuffer = null;
+    if (window.VideoEncoder && window.AudioEncoder && window.Mp4Muxer) {
+      try {
+        const decodeCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const arrBuf = await state.videoBlob.arrayBuffer();
+        state.decodedAudioBuffer = await decodeCtx.decodeAudioData(arrBuf);
+        decodeCtx.close();
+      } catch (e) {
+        console.warn('Gagal decode audio untuk render presisi, fallback ke metode lama:', e);
+        state.decodedAudioBuffer = null;
+      }
+    }
+
+    state.renderedClips = [];
+    const totalClips = state.aiResults.clips.length;
+    const progressSpan = 95 - progressStart;
+
+    for (let i = 0; i < totalClips; i++) {
+      if (state.cancelRequested) throw new Error('Proses dibatalkan oleh pengguna.');
+      const clip = state.aiResults.clips[i];
+      const clipProgressStart = progressStart + (i / totalClips) * progressSpan;
+
+      updateProgress(clipProgressStart, `Merekam Clip #${i+1} dari ${totalClips}: "${clip.headline}"...`);
+
+      try {
+        const blobUrl = await renderSingleClip(clip, p => {
+          updateProgress(clipProgressStart + (p * (progressSpan / 100) / totalClips), `Merekam Clip #${i+1}: ${Math.round(p)}%`);
+        });
+        state.renderedClips.push({ ...clip, blobUrl, success: true });
+      } catch (err) {
+        console.error(`Render clip #${i+1} gagal:`, err);
+        state.renderedClips.push({ ...clip, blobUrl: null, success: false, errorMsg: err.message });
+      }
+    }
+
+    updateProgress(97, 'Menyimpan ke riwayat proyek...');
+    await saveProjectToHistory();
+
+    updateProgress(100, 'Selesai! Menyiapkan hasil...');
+    await new Promise(r => setTimeout(r, 400));
+    hideModal();
+    renderResultsPage();
+    switchStep(3);
   }
 
   async function fetchGeminiWithRetry(model, key, body, retries = 1) {
@@ -2065,6 +2192,288 @@ ${escapeHtml(fullCaption)}
       hideModal();
     }
   };
+
+  // --- RIWAYAT PROYEK (IndexedDB) ---
+  // Menyimpan video sumber, hasil clip yang sudah jadi, subtitle, dan setting
+  // gaya (blur/font/dll) supaya proyek bisa dibuka & di-edit ulang kapan saja,
+  // walau halaman di-reload/ditutup. Video sumber ikut disimpan (bisa cukup
+  // besar) supaya render ulang dengan gaya berbeda tetap memungkinkan.
+  const HISTORY_DB_NAME = 'clipviral-history';
+  const HISTORY_STORE = 'projects';
+
+  function openHistoryDB() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(HISTORY_DB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(HISTORY_STORE)) {
+          db.createObjectStore(HISTORY_STORE, { keyPath: 'id', autoIncrement: true });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function saveProjectToHistory() {
+    try {
+      const allClips = state.aiResults && state.aiResults.clips ? state.aiResults.clips : [];
+      if (allClips.length === 0 || !state.videoBlob) return;
+
+      const renderedByIndex = new Map();
+      (state.renderedClips || []).forEach((c, idx) => renderedByIndex.set(idx, c));
+
+      const clipsToSave = [];
+      for (let i = 0; i < allClips.length; i++) {
+        const clip = allClips[i];
+        const rendered = renderedByIndex.get(i);
+        let blob = null;
+        if (rendered && rendered.success && rendered.blobUrl) {
+          blob = await fetch(rendered.blobUrl).then(r => r.blob());
+        }
+        clipsToSave.push({
+          headline: clip.headline,
+          subheadline: clip.subheadline,
+          caption: clip.caption,
+          tag_people: clip.tag_people || '',
+          mandatory_hashtags: clip.mandatory_hashtags || '',
+          suggested_hashtags: clip.suggested_hashtags || '',
+          start_sec: clip.start_sec,
+          end_sec: clip.end_sec,
+          viral_score: clip.viral_score,
+          reason: clip.reason || '',
+          subtitles: clip.subtitles || [],
+          blob // null kalau clip ini belum/gagal dirender, masih bisa dirender lagi pas dibuka
+        });
+      }
+
+      const title = (el('thumbSourceTitle') && el('thumbSourceTitle').textContent.trim()) || 'Proyek Clip';
+      const project = {
+        title,
+        createdAt: Date.now(),
+        clips: clipsToSave,
+        sourceVideoBlob: state.videoBlob,
+        videoDuration: state.videoDuration,
+        briefRules: (state.aiResults && state.aiResults.brief_rules) || [],
+        editorSettings: { ...state.editor }
+      };
+
+      const db = await openHistoryDB();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(HISTORY_STORE, 'readwrite');
+        tx.objectStore(HISTORY_STORE).add(project);
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch (e) {
+      console.warn('Gagal simpan riwayat proyek:', e);
+    }
+  }
+
+  async function getAllHistoryProjects() {
+    const db = await openHistoryDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(HISTORY_STORE, 'readonly');
+      const req = tx.objectStore(HISTORY_STORE).getAll();
+      req.onsuccess = () => resolve((req.result || []).sort((a, b) => b.createdAt - a.createdAt));
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function deleteHistoryProject(id) {
+    const db = await openHistoryDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(HISTORY_STORE, 'readwrite');
+      tx.objectStore(HISTORY_STORE).delete(id);
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  function formatHistoryDate(ts) {
+    const d = new Date(ts);
+    return d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }) +
+      ' ' + d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  async function loadProjectForEditing(project) {
+    try {
+      stopPreviewLoop();
+
+      state.videoBlob = project.sourceVideoBlob;
+      state.videoSrcUrl = URL.createObjectURL(project.sourceVideoBlob);
+      state.videoDuration = project.videoDuration || 0;
+      state.editor = { ...state.editor, ...project.editorSettings };
+
+      state.aiResults = {
+        brief_rules: project.briefRules || [],
+        clips: project.clips.map(c => ({
+          headline: c.headline,
+          subheadline: c.subheadline,
+          caption: c.caption,
+          tag_people: c.tag_people || '',
+          mandatory_hashtags: c.mandatory_hashtags || '',
+          suggested_hashtags: c.suggested_hashtags || '',
+          start_sec: c.start_sec,
+          end_sec: c.end_sec,
+          viral_score: c.viral_score,
+          reason: c.reason || '',
+          subtitles: c.subtitles || []
+        }))
+      };
+
+      state.renderedClips = project.clips
+        .map((c, idx) => c.blob ? { ...state.aiResults.clips[idx], blobUrl: URL.createObjectURL(c.blob), success: true } : null)
+        .filter(Boolean);
+
+      state.historyEditMode = true;
+      el('btnStartProcess').textContent = '🚀 Render Ulang dengan Gaya Baru';
+
+      hiddenVideo.src = state.videoSrcUrl;
+      hiddenVideo.onloadedmetadata = () => { hiddenVideo.currentTime = Math.min(1.0, state.videoDuration || 1.0); };
+
+      closeHistoryDrawer();
+      applyEditorSettingsToUI();
+      switchStep(2);
+    } catch (e) {
+      alert('Gagal membuka proyek: ' + e.message);
+    }
+  }
+
+  function applyEditorSettingsToUI() {
+    const ed = state.editor;
+    const setSlider = (id, val) => {
+      const elx = el(id);
+      elx.value = val;
+      elx.dispatchEvent(new Event('input'));
+    };
+    setSlider('sliderZoom', ed.zoom);
+    setSlider('sliderPosX', ed.posX);
+    setSlider('sliderPosY', ed.posY);
+    setSlider('sliderBlur', ed.blur);
+    setSlider('sliderBoxOpacity', ed.boxOpacity);
+    setSlider('sliderSubSize', ed.subSize);
+    setSlider('sliderSubY', ed.subY);
+    setSlider('sliderSubOffset', ed.subOffset);
+
+    el('fontSelect').value = ed.font;
+    el('fontSelect').dispatchEvent(new Event('change'));
+
+    document.querySelectorAll('.swatch-btn').forEach(b => {
+      b.classList.toggle('selected', b.getAttribute('data-color') === ed.color);
+    });
+
+    el('subBoxToggle').checked = ed.bgBox;
+    el('subBoxToggle').dispatchEvent(new Event('change'));
+
+    el('subtitleEnabledToggle').checked = ed.subtitleEnabled !== false;
+    el('subtitleEnabledToggle').dispatchEvent(new Event('change'));
+
+    document.getElementsByName('resOption').forEach(r => {
+      r.checked = (parseInt(r.value) === ed.resolution);
+      if (r.checked) r.dispatchEvent(new Event('change'));
+    });
+    document.getElementsByName('durOption').forEach(r => {
+      r.checked = (r.value === ed.durationChoice);
+      if (r.checked) r.dispatchEvent(new Event('change'));
+    });
+  }
+
+  async function openHistoryDrawer() {
+    el('historyOverlay').classList.remove('hidden');
+    el('historyDrawer').classList.remove('hidden');
+    const listEl = el('historyList');
+    listEl.innerHTML = '<div class="history-empty">Memuat riwayat...</div>';
+    try {
+      const projects = await getAllHistoryProjects();
+      if (projects.length === 0) {
+        listEl.innerHTML = '<div class="history-empty">Belum ada proyek yang tersimpan.<br/>Riwayat otomatis tersimpan setiap kali kamu selesai render clip.</div>';
+        return;
+      }
+      listEl.innerHTML = '';
+      projects.forEach(project => {
+        const div = document.createElement('div');
+        div.className = 'history-project';
+        div.innerHTML = `
+          <div class="history-project-header" data-toggle="${project.id}">
+            <div>
+              <div class="history-project-title">${escapeHtml(project.title)}</div>
+              <div class="history-project-meta">${formatHistoryDate(project.createdAt)} • ${project.clips.length} clip</div>
+            </div>
+            <div class="flex-row">
+              <button class="btn btn-secondary btn-sm" data-edit="${project.id}" title="Edit gaya & render ulang">✏️</button>
+              <button class="btn btn-secondary btn-sm" data-delete="${project.id}" title="Hapus proyek">🗑</button>
+            </div>
+          </div>
+          <div class="history-project-clips" id="historyClips-${project.id}"></div>
+        `;
+        listEl.appendChild(div);
+      });
+
+      listEl.querySelectorAll('[data-toggle]').forEach(headerEl => {
+        headerEl.addEventListener('click', () => {
+          const id = parseInt(headerEl.getAttribute('data-toggle'));
+          const project = projects.find(p => p.id === id);
+          const clipsEl = el(`historyClips-${id}`);
+          const isOpen = clipsEl.classList.contains('open');
+          if (isOpen) {
+            clipsEl.classList.remove('open');
+            clipsEl.innerHTML = '';
+            return;
+          }
+          clipsEl.innerHTML = project.clips.map((clip, idx) => {
+            const url = URL.createObjectURL(clip.blob);
+            return `
+              <div class="history-clip-row">
+                <video src="${url}" muted playsinline preload="metadata"></video>
+                <div class="history-clip-info">
+                  <div>${escapeHtml(clip.headline || `Clip #${idx + 1}`)}</div>
+                  <div class="history-project-meta">🔥 ${clip.viral_score}/100</div>
+                </div>
+                <a class="btn btn-secondary btn-sm" href="${url}" download="clipviral-0${idx+1}-${slugify(clip.headline || 'clip')}.mp4">⬇️</a>
+              </div>
+            `;
+          }).join('');
+          clipsEl.classList.add('open');
+        });
+      });
+
+      listEl.querySelectorAll('[data-edit]').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const id = parseInt(btn.getAttribute('data-edit'));
+          const project = projects.find(p => p.id === id);
+          if (!project.sourceVideoBlob) {
+            alert('Video sumber proyek ini tidak tersimpan, tidak bisa diedit ulang.');
+            return;
+          }
+          await loadProjectForEditing(project);
+        });
+      });
+
+      listEl.querySelectorAll('[data-delete]').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const id = parseInt(btn.getAttribute('data-delete'));
+          if (!confirm('Hapus proyek ini dari riwayat? Tidak bisa dibatalkan.')) return;
+          await deleteHistoryProject(id);
+          openHistoryDrawer();
+        });
+      });
+    } catch (e) {
+      listEl.innerHTML = '<div class="history-empty">Gagal memuat riwayat.</div>';
+      console.warn(e);
+    }
+  }
+
+  function closeHistoryDrawer() {
+    el('historyOverlay').classList.add('hidden');
+    el('historyDrawer').classList.add('hidden');
+  }
+
+  el('historyMenuBtn').addEventListener('click', openHistoryDrawer);
+  el('historyCloseBtn').addEventListener('click', closeHistoryDrawer);
+  el('historyOverlay').addEventListener('click', closeHistoryDrawer);
 
   // --- HELPERS ---
   function showModal(title, status) {
