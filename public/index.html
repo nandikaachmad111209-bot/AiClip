@@ -85,10 +85,16 @@
       display: flex;
       align-items: center;
       gap: 6px;
+      padding: 6px 10px;
+      border-radius: 12px;
+      border: 1px solid transparent;
+      transition: background 0.2s, border-color 0.2s, color 0.2s;
     }
 
     .step-item.active {
-      color: var(--accent-blue);
+      color: #fff;
+      background: var(--accent-blue);
+      border-color: var(--accent-blue);
     }
 
     .step-item.completed {
@@ -544,6 +550,12 @@
       border-radius: var(--radius);
       padding: 10px;
       margin-bottom: 10px;
+      border-left: 3px solid transparent;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    .history-project.open {
+      border-left-color: var(--accent-blue);
+      background: rgba(59, 130, 246, 0.08);
     }
     .history-project-header {
       display: flex;
@@ -565,6 +577,8 @@
     }
     .history-clip-row video { width: 56px; height: 100px; object-fit: cover; border-radius: 6px; background:#000; }
     .history-clip-info { flex: 1; min-width: 0; }
+    .history-clip-card { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-color); }
+    .history-clip-card:first-child { border-top: none; margin-top: 0; padding-top: 0; }
     .history-clip-info div:first-child { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .history-empty { color: var(--text-muted); font-size: 13px; text-align: center; padding: 30px 0; }
   </style>
@@ -1852,7 +1866,20 @@ Hasilkan JSON persis sesuai struktur berikut:
           output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
           error: e => console.error('VideoEncoder error', e)
         });
-        videoEncoder.configure({ codec: 'avc1.42001f', width: targetW, height: targetH, bitrate, framerate: fps });
+        try {
+          videoEncoder.configure({
+            codec: 'avc1.42001f',
+            width: targetW,
+            height: targetH,
+            bitrate,
+            framerate: fps,
+            hardwareAcceleration: 'prefer-hardware', // pakai encoder HW chip HP kalau ada, jauh lebih cepat dari software
+            latencyMode: 'realtime' // preset encode tercepat (bukan paling hemat ukuran file)
+          });
+        } catch (confErr) {
+          console.warn('Konfigurasi encoder cepat gagal, fallback ke default:', confErr);
+          videoEncoder.configure({ codec: 'avc1.42001f', width: targetW, height: targetH, bitrate, framerate: fps });
+        }
 
         const audioEncoder = new AudioEncoder({
           output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
@@ -2415,22 +2442,56 @@ ${escapeHtml(fullCaption)}
           const id = parseInt(headerEl.getAttribute('data-toggle'));
           const project = projects.find(p => p.id === id);
           const clipsEl = el(`historyClips-${id}`);
+          const projectEl = headerEl.closest('.history-project');
           const isOpen = clipsEl.classList.contains('open');
           if (isOpen) {
             clipsEl.classList.remove('open');
             clipsEl.innerHTML = '';
+            if (projectEl) projectEl.classList.remove('open');
             return;
           }
+          if (projectEl) projectEl.classList.add('open');
           clipsEl.innerHTML = project.clips.map((clip, idx) => {
             const url = URL.createObjectURL(clip.blob);
+            const fullCaption = `${clip.caption || ''}\n\n${clip.tag_people || ''}\n${clip.mandatory_hashtags || ''} ${clip.suggested_hashtags || ''}`.trim();
             return `
-              <div class="history-clip-row">
-                <video src="${url}" muted playsinline preload="metadata"></video>
-                <div class="history-clip-info">
-                  <div>${escapeHtml(clip.headline || `Clip #${idx + 1}`)}</div>
-                  <div class="history-project-meta">🔥 ${clip.viral_score}/100</div>
+              <div class="clip-card history-clip-card">
+                <div class="clip-badge-row">
+                  <span class="clip-rank-badge">#${idx + 1} Clip</span>
+                  ${clip.viral_score != null ? `<span class="viral-score">🔥 Viral Score: ${clip.viral_score}/100</span>` : ''}
                 </div>
-                <a class="btn btn-secondary btn-sm" href="${url}" download="clipviral-0${idx+1}-${slugify(clip.headline || 'clip')}.mp4">⬇️</a>
+
+                <video class="clip-video-preview" src="${url}" controls playsinline preload="metadata"></video>
+
+                <div class="form-group">
+                  <label>Headline:</label>
+                  <div class="copy-box">
+                    <strong>${escapeHtml(clip.headline || `Clip #${idx + 1}`)}</strong>
+                    <button class="btn btn-secondary btn-sm copy-box-btn" onclick="copyText('${escapeJsString(clip.headline || '')}')">📋 Salin</button>
+                  </div>
+                </div>
+
+                ${clip.subheadline ? `
+                <div class="form-group">
+                  <label>Subheadline:</label>
+                  <div class="copy-box">
+                    ${escapeHtml(clip.subheadline)}
+                    <button class="btn btn-secondary btn-sm copy-box-btn" onclick="copyText('${escapeJsString(clip.subheadline)}')">📋 Salin</button>
+                  </div>
+                </div>
+                ` : ''}
+
+                ${clip.caption ? `
+                <div class="form-group">
+                  <label>Caption Siap Upload:</label>
+                  <div class="copy-box" style="white-space: pre-wrap;">
+${escapeHtml(fullCaption)}
+                    <button class="btn btn-secondary btn-sm copy-box-btn" onclick="copyText('${escapeJsString(fullCaption)}')">📋 Salin Caption Lengkap</button>
+                  </div>
+                </div>
+                ` : ''}
+
+                <a class="btn btn-block" href="${url}" download="clipviral-0${idx+1}-${slugify(clip.headline || 'clip')}.mp4">⬇️ Download MP4</a>
               </div>
             `;
           }).join('');
